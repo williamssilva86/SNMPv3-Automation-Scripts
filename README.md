@@ -51,21 +51,33 @@ python3 snmpv3_switches.py
 ---
 
 ### 2. **snmpv3_aruba1930_http.py** (Aruba Instant On 1930)
-**Protocolo:** HTTP via Playwright (web automation)  
+**Protocolo:** HTTP via `requests`, sem navegador. Usa a mesma API XML (`/wcd`) que a interface web do switch usa por baixo.  
+**Login:** credenciais criptografadas com a chave RSA pública do switch (igual à tela de login)  
 **Modelos suportados:** Aruba Instant On 1930 48p/24p  
 **Configurações:**
-- 2 Usuários (adminSNMPv3, adminSNMPv3_write)
-- Grupos pré-existentes (DefaultRead, DefaultWrite)
+- System Info: hostname (do CSV, ou mantém o atual se a coluna estiver vazia), location e contact
+- Habilita o SNMP no switch
+- 2 Usuários (adminSNMPv3 → DefaultRead, adminSNMPv3_write → DefaultWrite)
+- Grupos pré-existentes (DefaultRead, DefaultWrite), criados só se não existirem
 - SHA + DES
-- System Info (hostname, location, contact)
+- Usuários que já existem não são recriados nem alterados
+- Salva a configuração (running-config → startup-config) ao final de cada switch
 - Sem ACL específico (use firewall se necessário)
-
-**Nota:** Usa grupos e views pré-configurados do switch (não customizáveis)
 
 **Uso:**
 ```bash
 python3 snmpv3_aruba1930_http.py
 ```
+
+**Parâmetros no início do script:**
+
+| Parâmetro | Padrão | Descrição |
+|-----------|--------|-----------|
+| `NOME_ARQUIVO_DADOS` | `Switches-SBF.txt` | Arquivo CSV de entrada |
+| `MAX_WORKERS` | `10` | Switches processados em paralelo |
+| `SALVAR_CONFIG` | `True` | `False` aplica sem salvar na startup-config (útil para teste) |
+| `SNMP_CONTACT` | `noc@empresa.com` | System Contact |
+| `USUARIOS_SNMP` | adminSNMPv3 / adminSNMPv3_write | Usuários e grupos |
 
 ---
 
@@ -91,8 +103,7 @@ pip install netmiko
 
 ### Para Aruba 1930 (HTTP):
 ```bash
-pip install playwright
-playwright install
+pip install requests cryptography
 ```
 
 ### Geral:
@@ -140,10 +151,11 @@ ip,location
 
 **Aruba 1930 (snmpv3_aruba1930_http.py):**
 ```csv
-ip,location
-10.64.46.37,Site Centro
-10.64.47.37,Site Zona Leste
+ip,hostname,location
+10.64.46.37,SW-NS2108-01,Site Centro
+10.64.47.37,,Site Zona Leste
 ```
+(na segunda linha o hostname está vazio, então o switch mantém o nome atual)
 
 ### Passo 2: Execute o script
 
@@ -163,6 +175,15 @@ O script pedirá:
 
 **Importante:** As senhas são mascaradas com `*` e ocultas nos logs.
 
+**Aruba 1930:** as senhas são enviadas ao switch **exatamente como digitadas**, como faz a interface web. Digite as mesmas senhas configuradas no NMS (ex.: Zabbix).
+
+| Senha | Regra do switch |
+|-------|-----------------|
+| Autenticação (SHA) | 8 a 32 caracteres ASCII |
+| Privacidade (DES) | 8 a 32 caracteres, **somente HEX** (0-9, A-F) |
+
+O script recusa na hora uma senha fora dessas regras e pede outra.
+
 ### Passo 4: Verifique os resultados
 
 Logs gerados:
@@ -180,6 +201,8 @@ Logs gerados:
 
 **Colunas opcionais:**
 2. `location` → Localização (0-160 caracteres, será lowercase)
+
+**Aruba 1930:** as colunas são lidas pelo nome do cabeçalho (`ip`, `hostname`, `location`), e a coluna opcional `hostname` define o System Name. Se estiver vazia, o hostname atual do switch é mantido.
 
 **Exemplo com acentos (será normalizado):**
 ```csv
@@ -223,10 +246,25 @@ User name: adminSNMPv3
 ====================================
 ```
 
+### SNMP_OK_1.txt (exemplo Aruba 1930)
+```
+========== SWITCH 10.64.46.37 ==========
+SENHAS SNMP:
+- usuario: adminSNMPv3 | group: defaultread | auth (SHA): ******** | priv (DES): ********
+- usuario: adminSNMPv3_write | group: defaultwrite | auth (SHA): ******** | priv (DES): ********
+
+RESULTADO:
+- CRIADO: adminSNMPv3
+- JÁ EXISTIA: adminSNMPv3_write (não alterado)
+- CONFIGURAÇÃO SALVA (startup-config)
+====================================
+```
+
 ### SNMP_ERRO_1.txt (exemplo)
 ```
 [10.64.3.37] ERRO: % Invalid command encountered - 'snmp-server location prááça'
 [10.64.5.37] ERRO: Nao foi possivel conectar. Verifique IP e conectividade.
+[10.64.46.37] ERRO: Login recusado (statusCode=...) - verifique usuário/senha
 ```
 
 ---
@@ -235,8 +273,8 @@ User name: adminSNMPv3
 
 | Aspecto | Cisco | Aruba 1930 |
 |---------|-------|-----------|
-| **Protocolo** | SSH (Netmiko) | HTTP (Playwright) |
-| **Conexão** | Terminal CLI | Browser automation |
+| **Protocolo** | SSH (Netmiko) | HTTP (requests) |
+| **Conexão** | Terminal CLI | API XML da interface web (`/wcd`) |
 | **Grupos SNMP** | Customizáveis | Pré-existentes (DefaultRead, DefaultWrite, DefaultSuper) |
 | **Views SNMP** | Customizáveis | Pré-existentes (Default, DefaultSuper) |
 | **ACL SNMP** | ✅ Sim (IP standard) | ❌ Não (use firewall) |
@@ -244,8 +282,9 @@ User name: adminSNMPv3
 | **Priv Protocol** | DES / AES 128 | DES |
 | **Usuarios** | 2 (customizáveis) | 2 (nomes fixos) |
 | **Traps SNMP** | ✅ Opcional | ❌ Não configurável |
-| **Velocidade** | Rápido | Mais lento (browser) |
-| **Workers** | 15 paralelos | 5 paralelos |
+| **Salvar config** | — | ✅ Automático (running → startup) |
+| **Velocidade** | Rápido | Rápido |
+| **Workers** | 15 paralelos | 10 paralelos |
 
 ---
 
@@ -267,13 +306,29 @@ User name: adminSNMPv3
 
 ### Aruba 1930
 
-**Erro: `Timeout ao conectar`**
-- **Causa:** Browser não consegue abrir página
-- **Solução:** Verifique IP, conectividade, credenciais
+**Erro: `Switch inacessível ou session ID não encontrado`**
+- **Causa:** Switch fora da rede, IP errado ou interface web desabilitada
+- **Solução:** Verifique IP, conectividade e se a página `http://<ip>` abre no navegador
 
-**Erro: `Security level No Auth No Priv`**
-- **Causa:** Limitação do modelo (grupos pré-configurados sem Auth)
-- **Solução:** Esperado no Aruba 1930 (use seu Cisco para Auth Priv)
+**Erro: `Login recusado (statusCode=...)`**
+- **Causa:** Usuário ou senha do switch incorretos
+- **Solução:** Confira as credenciais entrando manualmente na interface web
+
+**Erro: `<etapa>: switch recusou (statusCode=...: mensagem)`**
+- **Causa:** O switch rejeitou a configuração. A mensagem vem do próprio switch.
+- **Solução:** Leia a mensagem. Causas comuns: senha fora das regras ou nome de usuário com mais de 20 caracteres.
+
+**Mensagem: `O switch aceita só HEX neste campo`**
+- **Causa:** O campo Privacy Key (DES) do Aruba 1930 só aceita dígitos hexadecimais
+- **Solução:** Use uma senha DES só com 0-9 e A-F (8 a 32 caracteres)
+
+**Resultado: `JÁ EXISTIA: adminSNMPv3 (não alterado)`**
+- **Causa:** O usuário já estava configurado. O script não altera usuários existentes.
+- **Solução:** Para trocar a senha, remova o usuário pela interface web (Switching → SNMP) e rode novamente
+
+**`Authentication failure` / `Decryption error` no NMS (Zabbix)**
+- **Causa:** Senhas no NMS diferentes das digitadas no script
+- **Solução:** Remova o usuário no switch e rode o script de novo com as senhas exatas do NMS
 
 ---
 
@@ -309,7 +364,6 @@ snmpwalk -v 3 -l authPriv -u adminSNMPv3 -a SHA -A senha_auth -x DES -X senha_pr
 
 Melhorias bem-vindas:
 - Suporte a outros modelos (Juniper, Arista, etc)
-- API REST para Aruba 1930 (quando disponível)
 - Validação de senhas mais forte
 - Suporte a IPv6
 
